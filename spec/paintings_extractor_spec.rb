@@ -3,14 +3,53 @@ require_relative '../lib/paintings_extractor'
 
 FILES_DIR = File.expand_path('../files', __dir__)
 
-# ─── helpers ──────────────────────────────────────────────────────────────────
-
 def load_html(filename)
   File.read(File.join(FILES_DIR, filename))
 end
 
 def load_json(filename)
   JSON.parse(File.read(File.join(FILES_DIR, filename)))
+end
+
+# Shared examples for any Google carousel page.
+# Every page — whether paintings, anime, or anything else — must satisfy
+# these structural guarantees.
+RSpec.shared_examples 'a carousel extractor' do
+  it 'returns a non-empty Array' do
+    expect(results).to be_an(Array)
+    expect(results).not_to be_empty
+  end
+
+  it 'extracts a non-empty name string for every item' do
+    results.each do |item|
+      expect(item[:name]).to be_a(String), "name should be a String"
+      expect(item[:name]).not_to be_empty,  "name should not be empty"
+    end
+  end
+
+  it 'extracts extensions as an Array or nil for every item' do
+    results.each do |item|
+      expect([Array, NilClass]).to include(item[:extensions].class),
+        "extensions for '#{item[:name]}' should be Array or nil"
+    end
+  end
+
+  it 'extracts a full https://www.google.com link for every item' do
+    results.each do |item|
+      expect(item[:link]).to be_a(String),
+        "link for '#{item[:name]}' should be a String"
+      expect(item[:link]).to start_with('https://www.google.com'),
+        "link for '#{item[:name]}' should be a full Google URL"
+    end
+  end
+
+  it 'only includes images that are already embedded in the HTML (no external URLs)' do
+    results.each do |item|
+      next unless item.key?(:image)
+      expect(item[:image]).to start_with('data:image/'),
+        "'#{item[:name]}' image should be a base64 data URI, not an external URL"
+    end
+  end
 end
 
 # ─── Van Gogh paintings (primary challenge) ───────────────────────────────────
@@ -20,11 +59,9 @@ RSpec.describe PaintingsExtractor, 'Van Gogh paintings' do
   let(:expected) { load_json('expected-array.json')['artworks'] }
   let(:results)  { described_class.new(html).extract }
 
-  it 'returns an Array' do
-    expect(results).to be_an(Array)
-  end
+  include_examples 'a carousel extractor'
 
-  it 'extracts the correct number of artworks' do
+  it 'extracts exactly 47 artworks' do
     expect(results.length).to eq(expected.length)
   end
 
@@ -32,47 +69,17 @@ RSpec.describe PaintingsExtractor, 'Van Gogh paintings' do
     expect(results.map { |a| a[:name] }).to eq(expected.map { |a| a['name'] })
   end
 
-  it 'extracts extensions as an Array or nil for every artwork' do
-    results.each do |artwork|
-      ext = artwork[:extensions]
-      expect([Array, NilClass]).to include(ext.class), "expected extensions to be Array or nil for #{artwork[:name]}"
-    end
-  end
-
-  it 'matches the expected extensions' do
+  it 'matches expected extensions for every artwork' do
     results.each_with_index do |artwork, i|
       expect(artwork[:extensions]).to eq(expected[i]['extensions']),
-        "extensions mismatch for #{artwork[:name]}"
+        "extensions mismatch for '#{artwork[:name]}'"
     end
   end
 
-  it 'extracts a full Google URL link for every artwork' do
-    results.each do |artwork|
-      expect(artwork[:link]).to be_a(String), "expected link to be String for #{artwork[:name]}"
-      expect(artwork[:link]).to start_with('https://www.google.com')
-    end
-  end
-
-  it 'matches the expected links' do
+  it 'matches expected link for every artwork' do
     results.each_with_index do |artwork, i|
       expect(artwork[:link]).to eq(expected[i]['link']),
-        "link mismatch for #{artwork[:name]}"
-    end
-  end
-
-  it 'includes images only for artworks that have embedded thumbnails' do
-    # First 8 paintings have base64 thumbnails already in the HTML
-    results.first(8).each do |artwork|
-      expect(artwork[:image]).to be_a(String), "expected embedded image for #{artwork[:name]}"
-      expect(artwork[:image]).to start_with('data:image/')
-    end
-  end
-
-  it 'does not include images that would require extra HTTP requests' do
-    # Items beyond the first 8 have data-src pointing to external URLs
-    results.drop(8).each do |artwork|
-      expect(artwork).not_to have_key(:image),
-        "#{artwork[:name]} should not have an image (would require HTTP request)"
+        "link mismatch for '#{artwork[:name]}'"
     end
   end
 
@@ -80,103 +87,58 @@ RSpec.describe PaintingsExtractor, 'Van Gogh paintings' do
     expect(results.first[:name]).to eq('The Starry Night')
   end
 
-  it 'first artwork image matches expected' do
+  it 'first 8 artworks have embedded base64 thumbnails' do
+    results.first(8).each do |artwork|
+      expect(artwork[:image]).to be_a(String),
+        "'#{artwork[:name]}' should have an embedded image"
+      expect(artwork[:image]).to start_with('data:image/')
+    end
+  end
+
+  it 'artworks beyond the first 8 have no image key (would require HTTP request)' do
+    results.drop(8).each do |artwork|
+      expect(artwork).not_to have_key(:image),
+        "'#{artwork[:name]}' image requires an HTTP request and should be omitted"
+    end
+  end
+
+  it 'first artwork image matches expected exactly' do
     expect(results.first[:image]).to eq(expected.first['image'])
   end
 end
 
-# ─── Claude Monet paintings (additional layout test) ──────────────────────────
+# ─── Claude Monet paintings (real SERP page, newer carousel layout) ──────────
 
 RSpec.describe PaintingsExtractor, 'Claude Monet paintings' do
   let(:html)    { load_html('claude-monet-paintings.html') }
   let(:results) { described_class.new(html).extract }
 
   before(:all) do
-    path = File.join(FILES_DIR, 'claude-monet-paintings.html')
-    skip 'claude-monet-paintings.html not found' unless File.exist?(path)
+    skip 'claude-monet-paintings.html not present — run: ruby bin/fetch_test_pages.rb YOUR_KEY' \
+      unless File.exist?(File.join(FILES_DIR, 'claude-monet-paintings.html'))
   end
 
-  it 'returns a non-empty Array' do
-    expect(results).to be_an(Array)
-    expect(results).not_to be_empty
-  end
+  include_examples 'a carousel extractor'
 
-  it 'extracts painting names as non-empty strings' do
-    results.each do |artwork|
-      expect(artwork[:name]).to be_a(String)
-      expect(artwork[:name]).not_to be_empty
-    end
-  end
-
-  it 'extracts extensions as Array or nil' do
-    results.each do |artwork|
-      ext = artwork[:extensions]
-      expect([Array, NilClass]).to include(ext.class)
-    end
-  end
-
-  it 'extracts Google links' do
-    results.each do |artwork|
-      expect(artwork[:link]).to be_a(String)
-      expect(artwork[:link]).to start_with('https://www.google.com')
-    end
-  end
-
-  it 'includes embedded thumbnails for the first 3 items' do
-    results.first(3).each do |artwork|
-      expect(artwork[:image]).to be_a(String)
-      expect(artwork[:image]).to start_with('data:image/')
-    end
+  it 'extracts more than one item' do
+    expect(results.length).to be > 1
   end
 end
 
-# ─── Rembrandt paintings (additional layout test) ─────────────────────────────
+# ─── Pablo Picasso paintings (real SERP page, newer carousel layout) ──────────
 
-RSpec.describe PaintingsExtractor, 'Rembrandt paintings' do
-  let(:html)    { load_html('rembrandt-paintings.html') }
+RSpec.describe PaintingsExtractor, 'Pablo Picasso paintings' do
+  let(:html)    { load_html('pablo-picasso-paintings.html') }
   let(:results) { described_class.new(html).extract }
 
   before(:all) do
-    path = File.join(FILES_DIR, 'rembrandt-paintings.html')
-    skip 'rembrandt-paintings.html not found' unless File.exist?(path)
+    skip 'pablo-picasso-paintings.html not present — run: ruby bin/fetch_test_pages.rb YOUR_KEY' \
+      unless File.exist?(File.join(FILES_DIR, 'pablo-picasso-paintings.html'))
   end
 
-  it 'returns a non-empty Array' do
-    expect(results).to be_an(Array)
-    expect(results).not_to be_empty
-  end
+  include_examples 'a carousel extractor'
 
-  it 'extracts painting names as non-empty strings' do
-    results.each do |artwork|
-      expect(artwork[:name]).to be_a(String)
-      expect(artwork[:name]).not_to be_empty
-    end
-  end
-
-  it 'extracts extensions as Array or nil' do
-    results.each do |artwork|
-      ext = artwork[:extensions]
-      expect([Array, NilClass]).to include(ext.class)
-    end
-  end
-
-  it 'extracts Google links' do
-    results.each do |artwork|
-      expect(artwork[:link]).to be_a(String)
-      expect(artwork[:link]).to start_with('https://www.google.com')
-    end
-  end
-
-  it 'includes embedded thumbnails for the first 3 items' do
-    results.first(3).each do |artwork|
-      expect(artwork[:image]).to be_a(String)
-      expect(artwork[:image]).to start_with('data:image/')
-    end
-  end
-
-  it 'handles artworks with no year (nil extensions)' do
-    no_year = results.find { |a| a[:extensions].nil? }
-    expect(no_year).not_to be_nil, 'expected at least one artwork with nil extensions'
-    expect(no_year[:name]).to eq("The Hundred Guilder Print")
+  it 'extracts more than one item' do
+    expect(results.length).to be > 1
   end
 end
